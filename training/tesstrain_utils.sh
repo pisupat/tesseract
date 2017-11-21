@@ -44,11 +44,19 @@ err_exit() {
 run_command() {
     local cmd=$(which $1)
     if [[ -z ${cmd} ]]; then
-        err_exit "$1 not found"
+      for d in api training; do
+        cmd=$(which $d/$1)
+        if [[ ! -z ${cmd} ]]; then
+          break
+        fi
+      done
+      if [[ -z ${cmd} ]]; then
+          err_exit "$1 not found"
+      fi
     fi
     shift
     tlog "[$(date)] ${cmd} $@"
-    ${cmd} "$@" 2>&1 1>&2 | tee -a ${LOG_FILE}
+    "${cmd}" "$@" 2>&1 1>&2 | tee -a ${LOG_FILE}
     # check completion status
     if [[ $? -gt 0 ]]; then
         err_exit "Program $(basename ${cmd}) failed. Abort."
@@ -204,7 +212,7 @@ generate_font_image() {
     common_args+=" --fonts_dir=${FONTS_DIR} --strip_unrenderable_words"
     common_args+=" --leading=${LEADING}"
     common_args+=" --char_spacing=${CHAR_SPACING} --exposure=${EXPOSURE}"
-    common_args+=" --outputbase=${outbase}"
+    common_args+=" --outputbase=${outbase} --max_pages=3"
 
     # add --writing_mode=vertical-upright to common_args if the font is
     # specified to be rendered vertically.
@@ -279,14 +287,12 @@ phase_UP_generate_unicharset() {
     tlog "\n=== Phase UP: Generating unicharset and unichar properties files ==="
 
     local box_files=$(ls ${TRAINING_DIR}/*.box)
-    run_command unicharset_extractor -D "${TRAINING_DIR}/" ${box_files}
-    local outfile=${TRAINING_DIR}/unicharset
     UNICHARSET_FILE="${TRAINING_DIR}/${LANG_CODE}.unicharset"
-    check_file_readable ${outfile}
-    mv ${outfile} ${UNICHARSET_FILE}
+    run_command unicharset_extractor --output_unicharset "${UNICHARSET_FILE}" \
+      --norm_mode "${NORM_MODE}" ${box_files}
+    check_file_readable ${UNICHARSET_FILE}
 
     XHEIGHTS_FILE="${TRAINING_DIR}/${LANG_CODE}.xheights"
-    check_file_readable ${UNICHARSET_FILE}
     run_command set_unicharset_properties \
         -U ${UNICHARSET_FILE} -O ${UNICHARSET_FILE} -X ${XHEIGHTS_FILE} \
         --script_dir=${LANGDATA_ROOT}
@@ -339,11 +345,9 @@ phase_D_generate_dawg() {
     # 1/RRP_REVERSE_IF_HAS_RTL for freq and word DAWGS,
     # 2/RRP_FORCE_REVERSE for the punctuation DAWG.
     local punc_reverse_policy=0;
-    case ${LANG_CODE} in
-      ara | div| fas | pus | snd | syr | uig | urd | heb | yid )
-        punc_reverse_policy=2 ;;
-      * ) ;;
-    esac
+    if [[ "${LANG_IS_RTL}" == "1" ]]; then
+      punc_reverse_policy=2
+    fi
     if [[ ! -s ${PUNC_FILE} ]]; then
         PUNC_FILE="${LANGDATA_ROOT}/common.punc"
     fi
@@ -490,36 +494,35 @@ phase_B_generate_ambiguities() {
 
 make__lstmdata() {
   tlog "\n=== Constructing LSTM training data ==="
-  local lang_prefix=${LANGDATA_ROOT}/${LANG_CODE}/${LANG_CODE}
-  if [[ ! -d ${OUTPUT_DIR} ]]; then
+  local lang_prefix="${LANGDATA_ROOT}/${LANG_CODE}/${LANG_CODE}"
+  if [[ ! -d "${OUTPUT_DIR}" ]]; then
       tlog "Creating new directory ${OUTPUT_DIR}"
-      mkdir -p ${OUTPUT_DIR}
+      mkdir -p "${OUTPUT_DIR}"
+  fi
+  local lang_is_rtl=""
+  if [[ "${LANG_IS_RTL}" == "1" ]]; then
+    lang_is_rtl="--lang_is_rtl"
+  fi
+  local pass_through=""
+  if [[ "${NORM_MODE}" -ge "2" ]]; then
+    pass_through="--pass_through_recoder"
   fi
 
-  # Copy available files for this language from the langdata dir.
-  if [[ -r ${lang_prefix}.config ]]; then
-    tlog "Copying ${lang_prefix}.config to ${OUTPUT_DIR}"
-    cp ${lang_prefix}.config ${OUTPUT_DIR}
-    chmod u+w ${OUTPUT_DIR}/${LANG_CODE}.config
-  fi
-  if [[ -r "${TRAINING_DIR}/${LANG_CODE}.unicharset" ]]; then
-    tlog "Moving ${TRAINING_DIR}/${LANG_CODE}.unicharset to ${OUTPUT_DIR}"
-    mv "${TRAINING_DIR}/${LANG_CODE}.unicharset" "${OUTPUT_DIR}"
-  fi
-  for ext in number-dawg punc-dawg word-dawg; do
-    local src="${TRAINING_DIR}/${LANG_CODE}.${ext}"
-    if [[ -r "${src}" ]]; then
-      dest="${OUTPUT_DIR}/${LANG_CODE}.lstm-${ext}"
-      tlog "Moving ${src} to ${dest}"
-      mv "${src}" "${dest}"
-    fi
-  done
+  # Build the starter traineddata from the inputs.
+  run_command combine_lang_model \
+    --input_unicharset "${TRAINING_DIR}/${LANG_CODE}.unicharset" \
+    --script_dir "${LANGDATA_ROOT}" \
+    --words "${lang_prefix}.wordlist" \
+    --numbers "${lang_prefix}.numbers" \
+    --puncs "${lang_prefix}.punc" \
+    --output_dir "${OUTPUT_DIR}" --lang "${LANG_CODE}" \
+    "${pass_through}" "${lang_is_rtl}"
   for f in "${TRAINING_DIR}/${LANG_CODE}".*.lstmf; do
     tlog "Moving ${f} to ${OUTPUT_DIR}"
     mv "${f}" "${OUTPUT_DIR}"
   done
   local lstm_list="${OUTPUT_DIR}/${LANG_CODE}.training_files.txt"
-  ls -1 "${OUTPUT_DIR}"/*.lstmf > "${lstm_list}"
+  ls -1 "${OUTPUT_DIR}/${LANG_CODE}".*.lstmf > "${lstm_list}"
 }
 
 make__traineddata() {

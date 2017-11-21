@@ -49,7 +49,7 @@ StaticShape Series::OutputShape(const StaticShape& input_shape) const {
 // Note that series has its own implementation just for debug purposes.
 int Series::InitWeights(float range, TRand* randomizer) {
   num_weights_ = 0;
-  tprintf("Num outputs,weights in serial:\n");
+  tprintf("Num outputs,weights in Series:\n");
   for (int i = 0; i < stack_.size(); ++i) {
     int weights = stack_[i]->InitWeights(range, randomizer);
     tprintf("  %s:%d, %d\n",
@@ -57,6 +57,22 @@ int Series::InitWeights(float range, TRand* randomizer) {
     num_weights_ += weights;
   }
   tprintf("Total weights = %d\n", num_weights_);
+  return num_weights_;
+}
+
+// Recursively searches the network for softmaxes with old_no outputs,
+// and remaps their outputs according to code_map. See network.h for details.
+int Series::RemapOutputs(int old_no, const std::vector<int>& code_map) {
+  num_weights_ = 0;
+  tprintf("Num (Extended) outputs,weights in Series:\n");
+  for (int i = 0; i < stack_.size(); ++i) {
+    int weights = stack_[i]->RemapOutputs(old_no, code_map);
+    tprintf("  %s:%d, %d\n", stack_[i]->spec().string(),
+            stack_[i]->NumOutputs(), weights);
+    num_weights_ += weights;
+  }
+  tprintf("Total weights = %d\n", num_weights_);
+  no_ = stack_.back()->NumOutputs();
   return num_weights_;
 }
 

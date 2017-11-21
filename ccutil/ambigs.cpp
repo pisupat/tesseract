@@ -1,5 +1,5 @@
 ///////////////////////////////////////////////////////////////////////
-// File:        ambigs.cc
+// File:        ambigs.cpp
 // Description: Functions for dealing with ambiguities
 //              (training and recognition).
 // Author:      Daria Antonova
@@ -25,8 +25,8 @@
 #include "universalambigs.h"
 
 #if defined(_WIN32) && !defined(__GNUC__)
-# define strtok_r(str, delim, saveptr) strtok_s(str, delim, saveptr)
-#endif  /* _WIN32 && !__GNUC__ */
+#define strtok_r(str, delim, saveptr) strtok_s(str, delim, saveptr)
+#endif /* _WIN32 && !__GNUC__ */
 
 namespace tesseract {
 
@@ -43,7 +43,7 @@ AmbigSpec::AmbigSpec() {
   wrong_ngram_size = 0;
 }
 
-ELISTIZE(AmbigSpec);
+ELISTIZE(AmbigSpec)
 
 // Initializes the ambigs by adding a NULL pointer to each table.
 void UnicharAmbigs::InitUnicharAmbigs(const UNICHARSET& unicharset,
@@ -357,7 +357,7 @@ bool UnicharAmbigs::InsertIntoTable(
   // Insert the corresponding correct ngram into the unicharset.
   // Unicharset code assumes that the "base" ngram is inserted into
   // the unicharset before fragments of this ngram are inserted.
-  unicharset->unichar_insert(replacement_string);
+  unicharset->unichar_insert(replacement_string, OldUncleanUnichars::kTrue);
   ambig_spec->correct_ngram_id =
     unicharset->unichar_to_id(replacement_string);
   if (replacement_ambig_part_size > 1) {
@@ -372,7 +372,7 @@ bool UnicharAmbigs::InsertIntoTable(
     } else {
       STRING frag_str = CHAR_FRAGMENT::to_string(
           replacement_string, i, test_ambig_part_size, false);
-      unicharset->unichar_insert(frag_str.string());
+      unicharset->unichar_insert(frag_str.string(), OldUncleanUnichars::kTrue);
       unichar_id = unicharset->unichar_to_id(frag_str.string());
     }
     ambig_spec->correct_fragments[i] = unichar_id;

@@ -1,5 +1,5 @@
 ///////////////////////////////////////////////////////////////////////
-// File:        imagedata.h
+// File:        imagedata.cpp
 // Description: Class to hold information about a single multi-page tiff
 //              training file and its corresponding boxes or text file.
 // Author:      Ray Smith
@@ -331,7 +331,7 @@ void ImageData::SetPixInternal(Pix* pix, GenericVector<char>* image_data) {
   pixDestroy(&pix);
   image_data->resize_no_init(size);
   memcpy(&(*image_data)[0], data, size);
-  free(data);
+  lept_free(data);
 }
 
 // Returns the Pix image for the image_data. Must be pixDestroyed after use.
@@ -353,8 +353,9 @@ bool ImageData::AddBoxes(const char* box_text) {
     GenericVector<TBOX> boxes;
     GenericVector<STRING> texts;
     GenericVector<int> box_pages;
-    if (ReadMemBoxes(page_number_, false, box_text, &boxes,
-                     &texts, NULL, &box_pages)) {
+    if (ReadMemBoxes(page_number_, /*skip_blanks*/ false, box_text,
+                     /*continue_on_failure*/ true, &boxes, &texts, NULL,
+                     &box_pages)) {
       AddBoxes(boxes, texts, box_pages);
       return true;
     } else {

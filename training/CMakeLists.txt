@@ -11,7 +11,7 @@ if (CPPAN_BUILD)
 endif()
 
 # experimental
-if (MSVC AND NOT CPPAN_BUILD)
+if (MSVC AND NOT CPPAN_BUILD AND NOT USE_SYSTEM_ICU)
     include(CheckTypeSize)
     check_type_size("void *" SIZEOF_VOID_P)
 
@@ -56,7 +56,7 @@ endif()
 # experimental
 
 if (NOT CPPAN_BUILD)
-find_package(ICU COMPONENTS uc i18n)
+    find_package(ICU COMPONENTS uc i18n)
 endif()
 
 ########################################
@@ -146,15 +146,6 @@ project_group               (shapeclustering "Training Tools")
 
 
 ########################################
-# EXECUTABLE unicharset_extractor
-########################################
-
-add_executable              (unicharset_extractor unicharset_extractor.cpp)
-target_link_libraries       (unicharset_extractor libtesseract tessopt)
-project_group               (unicharset_extractor "Training Tools")
-
-
-########################################
 # EXECUTABLE wordlist2dawg
 ########################################
 
@@ -177,12 +168,20 @@ set(unicharset_training_src
     fileio.cpp
     fileio.h
     icuerrorcode.h
+    lang_model_helpers.cpp
+    lang_model_helpers.h
     lstmtester.cpp
     lstmtester.h
     normstrngs.cpp
     normstrngs.h
     unicharset_training_utils.cpp
     unicharset_training_utils.h
+
+    validate_grapheme.h validate_indic.h validate_khmer.h
+    validate_myanmar.h validator.h
+    validate_grapheme.cpp validate_indic.cpp validate_khmer.cpp
+    validate_myanmar.cpp validator.cpp
+
 )
 add_library                 (unicharset_training ${unicharset_training_src})
 if (NOT CPPAN_BUILD)
@@ -191,6 +190,15 @@ else()
 target_link_libraries       (unicharset_training common_training pvt.cppan.demo.unicode.icu.i18n)
 endif()
 project_group               (unicharset_training "Training Tools")
+
+
+########################################
+# EXECUTABLE combine_lang_model
+########################################
+
+add_executable              (combine_lang_model combine_lang_model.cpp)
+target_link_libraries       (combine_lang_model unicharset_training)
+project_group               (combine_lang_model "Training Tools")
 
 
 ########################################
@@ -218,6 +226,15 @@ project_group               (lstmtraining "Training Tools")
 add_executable              (set_unicharset_properties set_unicharset_properties.cpp)
 target_link_libraries       (set_unicharset_properties unicharset_training)
 project_group               (set_unicharset_properties "Training Tools")
+
+
+########################################
+# EXECUTABLE unicharset_extractor
+########################################
+
+add_executable              (unicharset_extractor unicharset_extractor.cpp)
+target_link_libraries       (unicharset_extractor libtesseract tessopt unicharset_training)
+project_group               (unicharset_extractor "Training Tools")
 
 
 ########################################

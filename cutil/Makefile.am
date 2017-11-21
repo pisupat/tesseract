@@ -1,4 +1,4 @@
-AM_CPPFLAGS += -I$(top_srcdir)/ccutil -I$(top_srcdir)/viewer
+AM_CPPFLAGS += -I$(top_srcdir)/ccutil -I$(top_srcdir)/viewer -DUSE_STD_NAMESPACE
 
 if VISIBILITY
 AM_CPPFLAGS += -DTESS_EXPORTS \
@@ -10,15 +10,7 @@ noinst_HEADERS = \
     emalloc.h globals.h \
     oldlist.h structures.h
 
-if !USING_MULTIPLELIBS
 noinst_LTLIBRARIES = libtesseract_cutil.la
-else
-lib_LTLIBRARIES = libtesseract_cutil.la
-libtesseract_cutil_la_LDFLAGS = -version-info $(GENERIC_LIBRARY_VERSION)
-libtesseract_cutil_la_LIBADD = \
-	../ccutil/libtesseract_ccutil.la \
-	../viewer/libtesseract_viewer.la	
-endif
 
 libtesseract_cutil_la_SOURCES = \
     bitvec.cpp callcpp.cpp cutil.cpp cutil_class.cpp danerror.cpp efio.cpp \

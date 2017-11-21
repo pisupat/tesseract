@@ -1,7 +1,7 @@
 AM_CPPFLAGS += \
     -I$(top_srcdir)/cutil -I$(top_srcdir)/ccutil \
     -I$(top_srcdir)/ccstruct -I$(top_srcdir)/dict \
-    -I$(top_srcdir)/viewer
+    -I$(top_srcdir)/viewer -DUSE_STD_NAMESPACE
     
 if VISIBILITY
 AM_CPPFLAGS += -DTESS_EXPORTS \
@@ -21,18 +21,7 @@ noinst_HEADERS = \
     sampleiterator.h shapeclassifier.h shapetable.h \
     tessclassifier.h trainingsample.h trainingsampleset.h
 
-if !USING_MULTIPLELIBS
 noinst_LTLIBRARIES = libtesseract_classify.la
-else
-lib_LTLIBRARIES = libtesseract_classify.la
-libtesseract_classify_la_LDFLAGS = -version-info $(GENERIC_LIBRARY_VERSION)
-libtesseract_classify_la_LIBADD = \
-    ../ccutil/libtesseract_ccutil.la \
-    ../cutil/libtesseract_cutil.la \
-    ../ccstruct/libtesseract_ccstruct.la \
-    ../dict/libtesseract_dict.la \
-    ../viewer/libtesseract_viewer.la
-endif
 
 libtesseract_classify_la_SOURCES = \
     adaptive.cpp adaptmatch.cpp blobclass.cpp \

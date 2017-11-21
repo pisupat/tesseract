@@ -1,5 +1,5 @@
 ///////////////////////////////////////////////////////////////////////
-// File:        weightmatrix.h
+// File:        weightmatrix.cpp
 // Description: Hides distinction between float/int implementations.
 // Author:      Ray Smith
 // Created:     Tue Jun 17 11:46:20 PST 2014
@@ -20,11 +20,17 @@
 
 #include "dotproductavx.h"
 #include "dotproductsse.h"
+#include "intsimdmatrix.h"
 #include "simddetect.h"
 #include "statistc.h"
 #include "tprintf.h"
 
 namespace tesseract {
+
+// Number of iterations after which the correction effectively becomes unity.
+const int kAdamCorrectionIterations = 200000;
+// Epsilon in Adam to prevent division by zero.
+const double kAdamEpsilon = 1e-8;
 
 // Copies the whole input transposed, converted to double, into *this.
 void TransposedArray::Transpose(const GENERIC_2D_ARRAY<double>& input) {
@@ -36,7 +42,7 @@ void TransposedArray::Transpose(const GENERIC_2D_ARRAY<double>& input) {
 
 // Sets up the network for training. Initializes weights using weights of
 // scale `range` picked according to the random number generator `randomizer`.
-int WeightMatrix::InitWeightsFloat(int no, int ni, bool ada_grad,
+int WeightMatrix::InitWeightsFloat(int no, int ni, bool use_adam,
                                    float weight_range, TRand* randomizer) {
   int_mode_ = false;
   wf_.Resize(no, ni, 0.0);
@@ -47,9 +53,35 @@ int WeightMatrix::InitWeightsFloat(int no, int ni, bool ada_grad,
       }
     }
   }
-  use_ada_grad_ = ada_grad;
+  use_adam_ = use_adam;
   InitBackward();
   return ni * no;
+}
+
+// Changes the number of outputs to the size of the given code_map, copying
+// the old weight matrix entries for each output from code_map[output] where
+// non-negative, and uses the mean (over all outputs) of the existing weights
+// for all outputs with negative code_map entries. Returns the new number of
+// weights.
+int WeightMatrix::RemapOutputs(const std::vector<int>& code_map) {
+  GENERIC_2D_ARRAY<double> old_wf(wf_);
+  int old_no = wf_.dim1();
+  int new_no = code_map.size();
+  int ni = wf_.dim2();
+  std::vector<double> means(ni, 0.0);
+  for (int c = 0; c < old_no; ++c) {
+    const double* weights = wf_[c];
+    for (int i = 0; i < ni; ++i) means[i] += weights[i];
+  }
+  for (double& mean : means) mean /= old_no;
+  wf_.ResizeNoInit(new_no, ni);
+  InitBackward();
+  for (int dest = 0; dest < new_no; ++dest) {
+    int src = code_map[dest];
+    const double* src_data = src >= 0 ? old_wf[src] : means.data();
+    memcpy(wf_[dest], src_data, ni * sizeof(*src_data));
+  }
+  return ni * new_no;
 }
 
 // Converts a float network to an int network. Each set of input weights that
@@ -80,6 +112,8 @@ void WeightMatrix::ConvertToInt() {
   }
   wf_.Resize(1, 1, 0.0);
   int_mode_ = true;
+  multiplier_.reset(IntSimdMatrix::GetFastestMultiplier());
+  if (multiplier_ != nullptr) multiplier_->Init(wi_);
 }
 
 // Allocates any needed memory for running Backward, and zeroes the deltas,
@@ -90,13 +124,13 @@ void WeightMatrix::InitBackward() {
   dw_.Resize(no, ni, 0.0);
   updates_.Resize(no, ni, 0.0);
   wf_t_.Transpose(wf_);
-  if (use_ada_grad_) dw_sq_sum_.Resize(no, ni, 0.0);
+  if (use_adam_) dw_sq_sum_.Resize(no, ni, 0.0);
 }
 
 // Flag on mode to indicate that this weightmatrix uses inT8.
 const int kInt8Flag = 1;
-// Flag on mode to indicate that this weightmatrix uses ada grad.
-const int kAdaGradFlag = 4;
+// Flag on mode to indicate that this weightmatrix uses adam.
+const int kAdamFlag = 4;
 // Flag on mode to indicate that this weightmatrix uses double. Set
 // independently of kInt8Flag as even in int mode the scales can
 // be float or double.
@@ -106,8 +140,8 @@ const int kDoubleFlag = 128;
 bool WeightMatrix::Serialize(bool training, TFile* fp) const {
   // For backward compatibility, add kDoubleFlag to mode to indicate the doubles
   // format, without errs, so we can detect and read old format weight matrices.
-  uinT8 mode = (int_mode_ ? kInt8Flag : 0) |
-               (use_ada_grad_ ? kAdaGradFlag : 0) | kDoubleFlag;
+  uinT8 mode =
+      (int_mode_ ? kInt8Flag : 0) | (use_adam_ ? kAdamFlag : 0) | kDoubleFlag;
   if (fp->FWrite(&mode, sizeof(mode), 1) != 1) return false;
   if (int_mode_) {
     if (!wi_.Serialize(fp)) return false;
@@ -115,7 +149,7 @@ bool WeightMatrix::Serialize(bool training, TFile* fp) const {
   } else {
     if (!wf_.Serialize(fp)) return false;
     if (training && !updates_.Serialize(fp)) return false;
-    if (training && use_ada_grad_ && !dw_sq_sum_.Serialize(fp)) return false;
+    if (training && use_adam_ && !dw_sq_sum_.Serialize(fp)) return false;
   }
   return true;
 }
@@ -126,17 +160,19 @@ bool WeightMatrix::DeSerialize(bool training, TFile* fp) {
   uinT8 mode = 0;
   if (fp->FRead(&mode, sizeof(mode), 1) != 1) return false;
   int_mode_ = (mode & kInt8Flag) != 0;
-  use_ada_grad_ = (mode & kAdaGradFlag) != 0;
+  use_adam_ = (mode & kAdamFlag) != 0;
   if ((mode & kDoubleFlag) == 0) return DeSerializeOld(training, fp);
   if (int_mode_) {
     if (!wi_.DeSerialize(fp)) return false;
     if (!scales_.DeSerialize(fp)) return false;
+    multiplier_.reset(IntSimdMatrix::GetFastestMultiplier());
+    if (multiplier_ != nullptr) multiplier_->Init(wi_);
   } else {
     if (!wf_.DeSerialize(fp)) return false;
     if (training) {
       InitBackward();
       if (!updates_.DeSerialize(fp)) return false;
-      if (use_ada_grad_ && !dw_sq_sum_.DeSerialize(fp)) return false;
+      if (use_adam_ && !dw_sq_sum_.DeSerialize(fp)) return false;
     }
   }
   return true;
@@ -178,19 +214,8 @@ void WeightMatrix::MatrixDotVector(const double* u, double* v) const {
 
 void WeightMatrix::MatrixDotVector(const inT8* u, double* v) const {
   ASSERT_HOST(int_mode_);
-  int num_out = wi_.dim1();
-  int num_in = wi_.dim2() - 1;
-  for (int i = 0; i < num_out; ++i) {
-    const inT8* Wi = wi_[i];
-    int total = 0;
-    if (SIMDDetect::IsSSEAvailable()) {
-      total = IntDotProductSSE(u, Wi, num_in);
-    } else {
-      for (int j = 0; j < num_in; ++j) total += Wi[j] * u[j];
-    }
-    // Add in the bias and correct for integer values.
-    v[i] = (static_cast<double>(total) / MAX_INT8 + Wi[num_in]) * scales_[i];
-  }
+  ASSERT_HOST(multiplier_ != nullptr);
+  multiplier_->MatrixDotVector(wi_, scales_, u, v);
 }
 
 // MatrixDotVector for peep weights, MultiplyAccumulate adds the
@@ -247,19 +272,27 @@ void WeightMatrix::SumOuterTransposed(const TransposedArray& u,
 }
 
 // Updates the weights using the given learning rate and momentum.
-// num_samples is the quotient to be used in the adagrad computation iff
-// use_ada_grad_ is true.
+// num_samples is the quotient to be used in the adam computation iff
+// use_adam_ is true.
 void WeightMatrix::Update(double learning_rate, double momentum,
-                          int num_samples) {
+                          double adam_beta, int num_samples) {
   ASSERT_HOST(!int_mode_);
-  if (use_ada_grad_ && num_samples > 0) {
-    dw_sq_sum_.SumSquares(dw_);
-    dw_.AdaGradScaling(dw_sq_sum_, num_samples);
+  if (use_adam_ && num_samples > 0 && num_samples < kAdamCorrectionIterations) {
+    learning_rate *= sqrt(1.0 - pow(adam_beta, num_samples));
+    learning_rate /= 1.0 - pow(momentum, num_samples);
   }
-  dw_ *= learning_rate;
-  updates_ += dw_;
-  if (momentum > 0.0) wf_ += updates_;
-  if (momentum >= 0.0) updates_ *= momentum;
+  if (use_adam_ && num_samples > 0 && momentum > 0.0) {
+    dw_sq_sum_.SumSquares(dw_, adam_beta);
+    dw_ *= learning_rate * (1.0 - momentum);
+    updates_ *= momentum;
+    updates_ += dw_;
+    wf_.AdamUpdate(updates_, dw_sq_sum_, learning_rate * kAdamEpsilon);
+  } else {
+    dw_ *= learning_rate;
+    updates_ += dw_;
+    if (momentum > 0.0) wf_ += updates_;
+    if (momentum >= 0.0) updates_ *= momentum;
+  }
   wf_t_.Transpose(wf_);
 }
 

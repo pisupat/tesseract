@@ -1,7 +1,7 @@
 AM_CPPFLAGS += \
     -I$(top_srcdir)/ccutil -I$(top_srcdir)/cutil -I$(top_srcdir)/ccstruct \
     -I$(top_srcdir)/arch -I$(top_srcdir)/viewer -I$(top_srcdir)/classify \
-    -I$(top_srcdir)/dict -I$(top_srcdir)/lstm
+    -I$(top_srcdir)/dict -I$(top_srcdir)/lstm -DUSE_STD_NAMESPACE
 AUTOMAKE_OPTIONS = subdir-objects
 SUBDIRS =
 AM_CXXFLAGS = $(OPENMP_CXXFLAGS)
@@ -24,12 +24,7 @@ include_HEADERS = \
 
 noinst_HEADERS = 
 
-if !USING_MULTIPLELIBS
 noinst_LTLIBRARIES = libtesseract_lstm.la
-else
-lib_LTLIBRARIES = libtesseract_lstm.la
-libtesseract_lstm_la_LDFLAGS = -version-info $(GENERIC_LIBRARY_VERSION)
-endif
 
 libtesseract_lstm_la_SOURCES = \
 	convolve.cpp ctc.cpp fullyconnected.cpp functions.cpp input.cpp \

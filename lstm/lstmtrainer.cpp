@@ -71,7 +71,8 @@ const int kTargetXScale = 5;
 const int kTargetYScale = 100;
 
 LSTMTrainer::LSTMTrainer()
-    : training_data_(0),
+    : randomly_rotate_(false),
+      training_data_(0),
       file_reader_(LoadDataFromFile),
       file_writer_(SaveDataToFile),
       checkpoint_reader_(
@@ -88,12 +89,14 @@ LSTMTrainer::LSTMTrainer(FileReader file_reader, FileWriter file_writer,
                          CheckPointWriter checkpoint_writer,
                          const char* model_base, const char* checkpoint_name,
                          int debug_interval, inT64 max_memory)
-    : training_data_(max_memory),
+    : randomly_rotate_(false),
+      training_data_(max_memory),
       file_reader_(file_reader),
       file_writer_(file_writer),
       checkpoint_reader_(checkpoint_reader),
       checkpoint_writer_(checkpoint_writer),
-      sub_trainer_(NULL) {
+      sub_trainer_(NULL),
+      mgr_(file_reader) {
   EmptyConstructor();
   if (file_reader_ == NULL) file_reader_ = LoadDataFromFile;
   if (file_writer_ == NULL) file_writer_ = SaveDataToFile;
@@ -122,48 +125,41 @@ LSTMTrainer::~LSTMTrainer() {
 
 // Tries to deserialize a trainer from the given file and silently returns
 // false in case of failure.
-bool LSTMTrainer::TryLoadingCheckpoint(const char* filename) {
+bool LSTMTrainer::TryLoadingCheckpoint(const char* filename,
+                                       const char* old_traineddata) {
   GenericVector<char> data;
   if (!(*file_reader_)(filename, &data)) return false;
   tprintf("Loaded file %s, unpacking...\n", filename);
-  return checkpoint_reader_->Run(data, this);
-}
-
-// Initializes the character set encode/decode mechanism.
-// train_flags control training behavior according to the TrainingFlags
-// enum, including character set encoding.
-// script_dir is required for TF_COMPRESS_UNICHARSET, and, if provided,
-// fully initializes the unicharset from the universal unicharsets.
-// Note: Call before InitNetwork!
-void LSTMTrainer::InitCharSet(const UNICHARSET& unicharset,
-                              const STRING& script_dir, int train_flags) {
-  EmptyConstructor();
-  training_flags_ = train_flags;
-  ccutil_.unicharset.CopyFrom(unicharset);
-  null_char_ = GetUnicharset().has_special_codes() ? UNICHAR_BROKEN
-                                                   : GetUnicharset().size();
-  SetUnicharsetProperties(script_dir);
-}
-
-// Initializes the character set encode/decode mechanism directly from a
-// previously setup UNICHARSET and UnicharCompress.
-// ctc_mode controls how the truth text is mapped to the network targets.
-// Note: Call before InitNetwork!
-void LSTMTrainer::InitCharSet(const UNICHARSET& unicharset,
-                              const UnicharCompress& recoder) {
-  EmptyConstructor();
-  int flags = TF_COMPRESS_UNICHARSET;
-  training_flags_ = static_cast<TrainingFlags>(flags);
-  ccutil_.unicharset.CopyFrom(unicharset);
-  recoder_ = recoder;
-  null_char_ = GetUnicharset().has_special_codes() ? UNICHAR_BROKEN
-                                                   : GetUnicharset().size();
-  RecodedCharID code;
-  recoder_.EncodeUnichar(null_char_, &code);
-  null_char_ = code(0);
-  // Space should encode as itself.
-  recoder_.EncodeUnichar(UNICHAR_SPACE, &code);
-  ASSERT_HOST(code(0) == UNICHAR_SPACE);
+  if (!checkpoint_reader_->Run(data, this)) return false;
+  StaticShape shape = network_->OutputShape(network_->InputShape());
+  if (((old_traineddata == nullptr || *old_traineddata == '\0') &&
+       network_->NumOutputs() == recoder_.code_range()) ||
+      filename == old_traineddata) {
+    return true;  // Normal checkpoint load complete.
+  }
+  tprintf("Code range changed from %d to %d!\n", network_->NumOutputs(),
+          recoder_.code_range());
+  if (old_traineddata == nullptr || *old_traineddata == '\0') {
+    tprintf("Must supply the old traineddata for code conversion!\n");
+    return false;
+  }
+  TessdataManager old_mgr;
+  ASSERT_HOST(old_mgr.Init(old_traineddata));
+  TFile fp;
+  if (!old_mgr.GetComponent(TESSDATA_LSTM_UNICHARSET, &fp)) return false;
+  UNICHARSET old_chset;
+  if (!old_chset.load_from_file(&fp, false)) return false;
+  if (!old_mgr.GetComponent(TESSDATA_LSTM_RECODER, &fp)) return false;
+  UnicharCompress old_recoder;
+  if (!old_recoder.DeSerialize(&fp)) return false;
+  std::vector<int> code_map = MapRecoder(old_chset, old_recoder);
+  // Set the null_char_ to the new value.
+  int old_null_char = null_char_;
+  SetNullChar();
+  // Map the softmax(s) in the network.
+  network_->RemapOutputs(old_recoder.code_range(), code_map);
+  tprintf("Previous null char=%d mapped to %d\n", old_null_char, null_char_);
+  return true;
 }
 
 // Initializes the trainer with a network_spec in the network description
@@ -174,27 +170,26 @@ void LSTMTrainer::InitCharSet(const UNICHARSET& unicharset,
 // Note: Be sure to call InitCharSet before InitNetwork!
 bool LSTMTrainer::InitNetwork(const STRING& network_spec, int append_index,
                               int net_flags, float weight_range,
-                              float learning_rate, float momentum) {
-  // Call after InitCharSet.
-  ASSERT_HOST(GetUnicharset().size() > SPECIAL_UNICHAR_CODES_COUNT);
-  weight_range_ = weight_range;
+                              float learning_rate, float momentum,
+                              float adam_beta) {
+  mgr_.SetVersionString(mgr_.VersionString() + ":" + network_spec.string());
+  adam_beta_ = adam_beta;
   learning_rate_ = learning_rate;
   momentum_ = momentum;
-  int num_outputs = null_char_ == GetUnicharset().size()
-                        ? null_char_ + 1
-                        : GetUnicharset().size();
-  if (IsRecoding()) num_outputs = recoder_.code_range();
-  if (!NetworkBuilder::InitNetwork(num_outputs, network_spec, append_index,
-                                   net_flags, weight_range, &randomizer_,
-                                   &network_)) {
+  SetNullChar();
+  if (!NetworkBuilder::InitNetwork(recoder_.code_range(), network_spec,
+                                   append_index, net_flags, weight_range,
+                                   &randomizer_, &network_)) {
     return false;
   }
   network_str_ += network_spec;
   tprintf("Built network:%s from request %s\n",
           network_->spec().string(), network_spec.string());
-  tprintf("Training parameters:\n  Debug interval = %d,"
-          " weights = %g, learning rate = %g, momentum=%g\n",
-          debug_interval_, weight_range_, learning_rate_, momentum_);
+  tprintf(
+      "Training parameters:\n  Debug interval = %d,"
+      " weights = %g, learning rate = %g, momentum=%g\n",
+      debug_interval_, weight_range, learning_rate_, momentum_);
+  tprintf("null char=%d\n", null_char_);
   return true;
 }
 
@@ -302,9 +297,12 @@ void LSTMTrainer::DebugNetwork() {
 // Loads a set of lstmf files that were created using the lstm.train config to
 // tesseract into memory ready for training. Returns false if nothing was
 // loaded.
-bool LSTMTrainer::LoadAllTrainingData(const GenericVector<STRING>& filenames) {
+bool LSTMTrainer::LoadAllTrainingData(const GenericVector<STRING>& filenames,
+                                      CachingStrategy cache_strategy,
+                                      bool randomly_rotate) {
+  randomly_rotate_ = randomly_rotate;
   training_data_.Clear();
-  return training_data_.LoadDocuments(filenames, CacheStrategy(), file_reader_);
+  return training_data_.LoadDocuments(filenames, cache_strategy, file_reader_);
 }
 
 // Keeps track of best and locally worst char error_rate and launches tests
@@ -430,8 +428,9 @@ bool LSTMTrainer::TransitionTrainingStage(float error_threshold) {
 }
 
 // Writes to the given file. Returns false in case of error.
-bool LSTMTrainer::Serialize(TFile* fp) const {
-  if (!LSTMRecognizer::Serialize(fp)) return false;
+bool LSTMTrainer::Serialize(SerializeAmount serialize_amount,
+                            const TessdataManager* mgr, TFile* fp) const {
+  if (!LSTMRecognizer::Serialize(mgr, fp)) return false;
   if (fp->FWrite(&learning_iteration_, sizeof(learning_iteration_), 1) != 1)
     return false;
   if (fp->FWrite(&prev_sample_iteration_, sizeof(prev_sample_iteration_), 1) !=
@@ -447,9 +446,9 @@ bool LSTMTrainer::Serialize(TFile* fp) const {
   if (fp->FWrite(&error_rates_, sizeof(error_rates_), 1) != 1) return false;
   if (fp->FWrite(&training_stage_, sizeof(training_stage_), 1) != 1)
     return false;
-  uinT8 amount = serialize_amount_;
+  uinT8 amount = serialize_amount;
   if (fp->FWrite(&amount, sizeof(amount), 1) != 1) return false;
-  if (amount == LIGHT) return true;  // We are done.
+  if (serialize_amount == LIGHT) return true;  // We are done.
   if (fp->FWrite(&best_error_rate_, sizeof(best_error_rate_), 1) != 1)
     return false;
   if (fp->FWrite(&best_error_rates_, sizeof(best_error_rates_), 1) != 1)
@@ -466,7 +465,8 @@ bool LSTMTrainer::Serialize(TFile* fp) const {
     return false;
   if (!best_model_data_.Serialize(fp)) return false;
   if (!worst_model_data_.Serialize(fp)) return false;
-  if (amount != NO_BEST_TRAINER && !best_trainer_.Serialize(fp)) return false;
+  if (serialize_amount != NO_BEST_TRAINER && !best_trainer_.Serialize(fp))
+    return false;
   GenericVector<char> sub_data;
   if (sub_trainer_ != NULL && !SaveTrainingDump(LIGHT, sub_trainer_, &sub_data))
     return false;
@@ -480,8 +480,8 @@ bool LSTMTrainer::Serialize(TFile* fp) const {
 
 // Reads from the given file. Returns false in case of error.
 // NOTE: It is assumed that the trainer is never read cross-endian.
-bool LSTMTrainer::DeSerialize(TFile* fp) {
-  if (!LSTMRecognizer::DeSerialize(fp)) return false;
+bool LSTMTrainer::DeSerialize(const TessdataManager* mgr, TFile* fp) {
+  if (!LSTMRecognizer::DeSerialize(mgr, fp)) return false;
   if (fp->FRead(&learning_iteration_, sizeof(learning_iteration_), 1) != 1) {
     // Special case. If we successfully decoded the recognizer, but fail here
     // then it means we were just given a recognizer, so issue a warning and
@@ -643,8 +643,6 @@ int LSTMTrainer::ReduceLayerLearningRates(double factor, int num_samples,
     LR_SAME,  // Learning rate will stay the same.
     LR_COUNT  // Size of arrays.
   };
-  // Epsilon is so small that it may as well be zero, but still positive.
-  const double kEpsilon = 1.0e-30;
   GenericVector<STRING> layers = EnumerateLayers();
   int num_layers = layers.size();
   GenericVector<int> num_weights;
@@ -657,7 +655,7 @@ int LSTMTrainer::ReduceLayerLearningRates(double factor, int num_samples,
   }
   double momentum_factor = 1.0 / (1.0 - momentum_);
   GenericVector<char> orig_trainer;
-  SaveTrainingDump(LIGHT, this, &orig_trainer);
+  samples_trainer->SaveTrainingDump(LIGHT, this, &orig_trainer);
   for (int i = 0; i < num_layers; ++i) {
     Network* layer = GetLayer(layers[i]);
     num_weights[i] = layer->IsTraining() ? layer->num_weights() : 0;
@@ -671,9 +669,9 @@ int LSTMTrainer::ReduceLayerLearningRates(double factor, int num_samples,
       if (ww == LR_DOWN) ww_factor *= factor;
       // Make a copy of *this, so we can mess about without damaging anything.
       LSTMTrainer copy_trainer;
-      copy_trainer.ReadTrainingDump(orig_trainer, &copy_trainer);
+      samples_trainer->ReadTrainingDump(orig_trainer, &copy_trainer);
       // Clear the updates, doing nothing else.
-      copy_trainer.network_->Update(0.0, 0.0, 0);
+      copy_trainer.network_->Update(0.0, 0.0, 0.0, 0);
       // Adjust the learning rate in each layer.
       for (int i = 0; i < num_layers; ++i) {
         if (num_weights[i] == 0) continue;
@@ -687,15 +685,17 @@ int LSTMTrainer::ReduceLayerLearningRates(double factor, int num_samples,
       if (trainingdata == NULL) continue;
       // We'll now use this trainer again for each layer.
       GenericVector<char> updated_trainer;
-      SaveTrainingDump(LIGHT, &copy_trainer, &updated_trainer);
+      samples_trainer->SaveTrainingDump(LIGHT, &copy_trainer, &updated_trainer);
       for (int i = 0; i < num_layers; ++i) {
         if (num_weights[i] == 0) continue;
         LSTMTrainer layer_trainer;
-        layer_trainer.ReadTrainingDump(updated_trainer, &layer_trainer);
+        samples_trainer->ReadTrainingDump(updated_trainer, &layer_trainer);
         Network* layer = layer_trainer.GetLayer(layers[i]);
-        // Update the weights in just the layer, and also zero the updates
-        // matrix (to epsilon).
-        layer->Update(0.0, kEpsilon, 0);
+        // Update the weights in just the layer, using Adam if enabled.
+        layer->Update(0.0, momentum_, adam_beta_,
+                      layer_trainer.training_iteration_ + 1);
+        // Zero the updates matrix again.
+        layer->Update(0.0, 0.0, 0.0, 0);
         // Train again on the same sample, again holding back the updates.
         layer_trainer.TrainOnLine(trainingdata, true);
         // Count the sign changes in the updates in layer vs in copy_trainer.
@@ -756,7 +756,8 @@ bool LSTMTrainer::EncodeString(const STRING& str, const UNICHARSET& unicharset,
   GenericVector<int> internal_labels;
   labels->truncate(0);
   if (!simple_text) labels->push_back(null_char);
-  if (unicharset.encode_string(str.string(), true, &internal_labels, NULL,
+  string cleaned = unicharset.CleanupString(str.string());
+  if (unicharset.encode_string(cleaned.c_str(), true, &internal_labels, NULL,
                                &err_index)) {
     bool success = true;
     for (int i = 0; i < internal_labels.size(); ++i) {
@@ -782,8 +783,8 @@ bool LSTMTrainer::EncodeString(const STRING& str, const UNICHARSET& unicharset,
     if (success) return true;
   }
   tprintf("Encoding of string failed! Failure bytes:");
-  while (err_index < str.length()) {
-    tprintf(" %x", str[err_index++]);
+  while (err_index < cleaned.size()) {
+    tprintf(" %x", cleaned[err_index++]);
   }
   tprintf("\n");
   return false;
@@ -809,7 +810,7 @@ Trainability LSTMTrainer::TrainOnLine(const ImageData* trainingdata,
        training_iteration() >
            last_perfect_training_iteration_ + perfect_delay_)) {
     network_->Backward(debug, targets, &scratch_space_, &bp_deltas);
-    network_->Update(learning_rate_, batch ? -1.0f : momentum_,
+    network_->Update(learning_rate_, batch ? -1.0f : momentum_, adam_beta_,
                      training_iteration_ + 1);
   }
 #ifndef GRAPHICS_DISABLED
@@ -836,9 +837,27 @@ Trainability LSTMTrainer::PrepareForBackward(const ImageData* trainingdata,
       training_iteration() % debug_interval_ == 0;
   GenericVector<int> truth_labels;
   if (!EncodeString(trainingdata->transcription(), &truth_labels)) {
-    tprintf("Can't encode transcription: %s\n",
-            trainingdata->transcription().string());
+    tprintf("Can't encode transcription: '%s' in language '%s'\n",
+            trainingdata->transcription().string(),
+            trainingdata->language().string());
     return UNENCODABLE;
+  }
+  bool upside_down = false;
+  if (randomly_rotate_) {
+    // This ensures consistent training results.
+    SetRandomSeed();
+    upside_down = randomizer_.SignedRand(1.0) > 0.0;
+    if (upside_down) {
+      // Modify the truth labels to match the rotation:
+      // Apart from space and null, increment the label. This is changes the
+      // script-id to the same script-id but upside-down.
+      // The labels need to be reversed in order, as the first is now the last.
+      for (int c = 0; c < truth_labels.size(); ++c) {
+        if (truth_labels[c] != UNICHAR_SPACE && truth_labels[c] != null_char_)
+          ++truth_labels[c];
+      }
+      truth_labels.reverse();
+    }
   }
   int w = 0;
   while (w < truth_labels.size() &&
@@ -852,8 +871,8 @@ Trainability LSTMTrainer::PrepareForBackward(const ImageData* trainingdata,
   float image_scale;
   NetworkIO inputs;
   bool invert = trainingdata->boxes().empty();
-  if (!RecognizeLine(*trainingdata, invert, debug, invert, 0.0f, &image_scale,
-                     &inputs, fwd_outputs)) {
+  if (!RecognizeLine(*trainingdata, invert, debug, invert, upside_down,
+                     &image_scale, &inputs, fwd_outputs)) {
     tprintf("Image not trainable\n");
     return UNENCODABLE;
   }
@@ -875,10 +894,10 @@ Trainability LSTMTrainer::PrepareForBackward(const ImageData* trainingdata,
   }
   GenericVector<int> ocr_labels;
   GenericVector<int> xcoords;
-  LabelsFromOutputs(*fwd_outputs, 0.0f, &ocr_labels, &xcoords);
+  LabelsFromOutputs(*fwd_outputs, &ocr_labels, &xcoords);
   // CTC does not produce correct target labels to begin with.
   if (loss_type != LT_CTC) {
-    LabelsFromOutputs(*targets, 0.0f, &truth_labels, &xcoords);
+    LabelsFromOutputs(*targets, &truth_labels, &xcoords);
   }
   if (!DebugLSTMTraining(inputs, *trainingdata, *fwd_outputs, truth_labels,
                          *targets)) {
@@ -905,30 +924,36 @@ Trainability LSTMTrainer::PrepareForBackward(const ImageData* trainingdata,
 }
 
 // Writes the trainer to memory, so that the current training state can be
-// restored.
+// restored.  *this must always be the master trainer that retains the only
+// copy of the training data and language model. trainer is the model that is
+// actually serialized.
 bool LSTMTrainer::SaveTrainingDump(SerializeAmount serialize_amount,
                                    const LSTMTrainer* trainer,
                                    GenericVector<char>* data) const {
   TFile fp;
   fp.OpenWrite(data);
-  trainer->serialize_amount_ = serialize_amount;
-  return trainer->Serialize(&fp);
+  return trainer->Serialize(serialize_amount, &mgr_, &fp);
 }
 
-// Reads previously saved trainer from memory.
-bool LSTMTrainer::ReadTrainingDump(const GenericVector<char>& data,
-                                   LSTMTrainer* trainer) {
-  if (data.size() == 0) {
-    tprintf("Warning: data size is zero in LSTMTrainer::ReadTrainingDump\n");
+// Restores the model to *this.
+bool LSTMTrainer::ReadLocalTrainingDump(const TessdataManager* mgr,
+                                        const char* data, int size) {
+  if (size == 0) {
+    tprintf("Warning: data size is 0 in LSTMTrainer::ReadLocalTrainingDump\n");
     return false;
   }
-  return trainer->ReadSizedTrainingDump(&data[0], data.size());
-}
-
-bool LSTMTrainer::ReadSizedTrainingDump(const char* data, int size) {
   TFile fp;
   fp.Open(data, size);
-  return DeSerialize(&fp);
+  return DeSerialize(mgr, &fp);
+}
+
+// Writes the full recognition traineddata to the given filename.
+bool LSTMTrainer::SaveTraineddata(const STRING& filename) {
+  GenericVector<char> recognizer_data;
+  SaveRecognitionDump(&recognizer_data);
+  mgr_.OverwriteEntry(TESSDATA_LSTM, &recognizer_data[0],
+                      recognizer_data.size());
+  return mgr_.SaveFile(filename, file_writer_);
 }
 
 // Writes the recognizer to memory, so that it can be used for testing later.
@@ -936,18 +961,8 @@ void LSTMTrainer::SaveRecognitionDump(GenericVector<char>* data) const {
   TFile fp;
   fp.OpenWrite(data);
   network_->SetEnableTraining(TS_TEMP_DISABLE);
-  ASSERT_HOST(LSTMRecognizer::Serialize(&fp));
+  ASSERT_HOST(LSTMRecognizer::Serialize(&mgr_, &fp));
   network_->SetEnableTraining(TS_RE_ENABLE);
-}
-
-// Reads and returns a previously saved recognizer from memory.
-LSTMRecognizer* LSTMTrainer::ReadRecognitionDump(
-    const GenericVector<char>& data) {
-  TFile fp;
-  fp.Open(&data[0], data.size());
-  LSTMRecognizer* recognizer = new LSTMRecognizer;
-  ASSERT_HOST(recognizer->DeSerialize(&fp));
-  return recognizer;
 }
 
 // Returns a suitable filename for a training dump, based on the model_base_,
@@ -956,7 +971,7 @@ STRING LSTMTrainer::DumpFilename() const {
   STRING filename;
   filename.add_str_double(model_base_.string(), best_error_rate_);
   filename.add_str_int("_", best_iteration_);
-  filename += ".lstm";
+  filename += ".checkpoint";
   return filename;
 }
 
@@ -967,6 +982,64 @@ void LSTMTrainer::FillErrorBuffer(double new_error, ErrorTypes type) {
   error_rates_[type] = 100.0 * new_error;
 }
 
+// Helper generates a map from each current recoder_ code (ie softmax index)
+// to the corresponding old_recoder code, or -1 if there isn't one.
+std::vector<int> LSTMTrainer::MapRecoder(
+    const UNICHARSET& old_chset, const UnicharCompress& old_recoder) const {
+  int num_new_codes = recoder_.code_range();
+  int num_new_unichars = GetUnicharset().size();
+  std::vector<int> code_map(num_new_codes, -1);
+  for (int c = 0; c < num_new_codes; ++c) {
+    int old_code = -1;
+    // Find all new unichar_ids that recode to something that includes c.
+    // The <= is to include the null char, which may be beyond the unicharset.
+    for (int uid = 0; uid <= num_new_unichars; ++uid) {
+      RecodedCharID codes;
+      int length = recoder_.EncodeUnichar(uid, &codes);
+      int code_index = 0;
+      while (code_index < length && codes(code_index) != c) ++code_index;
+      if (code_index == length) continue;
+      // The old unicharset must have the same unichar.
+      int old_uid =
+          uid < num_new_unichars
+              ? old_chset.unichar_to_id(GetUnicharset().id_to_unichar(uid))
+              : old_chset.size() - 1;
+      if (old_uid == INVALID_UNICHAR_ID) continue;
+      // The encoding of old_uid at the same code_index is the old code.
+      RecodedCharID old_codes;
+      if (code_index < old_recoder.EncodeUnichar(old_uid, &old_codes)) {
+        old_code = old_codes(code_index);
+        break;
+      }
+    }
+    code_map[c] = old_code;
+  }
+  return code_map;
+}
+
+// Private version of InitCharSet above finishes the job after initializing
+// the mgr_ data member.
+void LSTMTrainer::InitCharSet() {
+  EmptyConstructor();
+  training_flags_ = TF_COMPRESS_UNICHARSET;
+  // Initialize the unicharset and recoder.
+  if (!LoadCharsets(&mgr_)) {
+    ASSERT_HOST(
+        "Must provide a traineddata containing lstm_unicharset and"
+        " lstm_recoder!\n" != nullptr);
+  }
+  SetNullChar();
+}
+
+// Helper computes and sets the null_char_.
+void LSTMTrainer::SetNullChar() {
+  null_char_ = GetUnicharset().has_special_codes() ? UNICHAR_BROKEN
+                                                   : GetUnicharset().size();
+  RecodedCharID code;
+  recoder_.EncodeUnichar(null_char_, &code);
+  null_char_ = code(0);
+}
+
 // Factored sub-constructor sets up reasonable default values.
 void LSTMTrainer::EmptyConstructor() {
   align_win_ = NULL;
@@ -974,55 +1047,9 @@ void LSTMTrainer::EmptyConstructor() {
   ctc_win_ = NULL;
   recon_win_ = NULL;
   checkpoint_iteration_ = 0;
-  serialize_amount_ = FULL;
   training_stage_ = 0;
   num_training_stages_ = 2;
   InitIterations();
-}
-
-// Sets the unicharset properties using the given script_dir as a source of
-// script unicharsets. If the flag TF_COMPRESS_UNICHARSET is true, also sets
-// up the recoder_ to simplify the unicharset.
-void LSTMTrainer::SetUnicharsetProperties(const STRING& script_dir) {
-  tprintf("Setting unichar properties\n");
-  for (int s = 0; s < GetUnicharset().get_script_table_size(); ++s) {
-    if (strcmp("NULL", GetUnicharset().get_script_from_script_id(s)) == 0)
-      continue;
-    // Load the unicharset for the script if available.
-    STRING filename = script_dir + "/" +
-                      GetUnicharset().get_script_from_script_id(s) +
-                      ".unicharset";
-    UNICHARSET script_set;
-    GenericVector<char> data;
-    if ((*file_reader_)(filename, &data) &&
-        script_set.load_from_inmemory_file(&data[0], data.size())) {
-      tprintf("Setting properties for script %s\n",
-              GetUnicharset().get_script_from_script_id(s));
-      ccutil_.unicharset.SetPropertiesFromOther(script_set);
-    }
-  }
-  if (IsRecoding()) {
-    STRING filename = script_dir + "/radical-stroke.txt";
-    GenericVector<char> data;
-    if ((*file_reader_)(filename, &data)) {
-      data += '\0';
-      STRING stroke_table = &data[0];
-      if (recoder_.ComputeEncoding(GetUnicharset(), null_char_,
-                                   &stroke_table)) {
-        RecodedCharID code;
-        recoder_.EncodeUnichar(null_char_, &code);
-        null_char_ = code(0);
-        // Space should encode as itself.
-        recoder_.EncodeUnichar(UNICHAR_SPACE, &code);
-        ASSERT_HOST(code(0) == UNICHAR_SPACE);
-        return;
-      }
-    } else {
-      tprintf("Failed to load radical-stroke info from: %s\n",
-              filename.string());
-    }
-    training_flags_ &= ~TF_COMPRESS_UNICHARSET;
-  }
 }
 
 // Outputs the string and periodically displays the given network inputs
@@ -1043,7 +1070,7 @@ bool LSTMTrainer::DebugLSTMTraining(const NetworkIO& inputs,
     // Get class labels, xcoords and string.
     GenericVector<int> labels;
     GenericVector<int> xcoords;
-    LabelsFromOutputs(outputs, 0.0f, &labels, &xcoords);
+    LabelsFromOutputs(outputs, &labels, &xcoords);
     STRING text = DecodeLabels(labels);
     tprintf("Iteration %d: ALIGNED TRUTH : %s\n",
             training_iteration(), text.string());
@@ -1286,11 +1313,13 @@ STRING LSTMTrainer::UpdateErrorGraph(int iteration, double error_rate,
   if (error_rate > best_error_rate_
       && iteration < best_iteration_ + kErrorGraphInterval) {
     // Too soon to record a new point.
-    if (tester != NULL)
-      return tester->Run(worst_iteration_, NULL, worst_model_data_,
-                         CurrentTrainingStage());
-    else
+    if (tester != NULL && !worst_model_data_.empty()) {
+      mgr_.OverwriteEntry(TESSDATA_LSTM, &worst_model_data_[0],
+                          worst_model_data_.size());
+      return tester->Run(worst_iteration_, NULL, mgr_, CurrentTrainingStage());
+    } else {
       return "";
+    }
   }
   STRING result;
   // NOTE: there are 2 asymmetries here:
@@ -1301,10 +1330,11 @@ STRING LSTMTrainer::UpdateErrorGraph(int iteration, double error_rate,
   //    between very frequent minima.
   if (error_rate < best_error_rate_) {
     // This is a new (global) minimum.
-    if (tester != NULL) {
-      if (worst_model_data_.size() != 0)
-        result = tester->Run(worst_iteration_, worst_error_rates_,
-                             worst_model_data_, CurrentTrainingStage());
+    if (tester != nullptr && !worst_model_data_.empty()) {
+      mgr_.OverwriteEntry(TESSDATA_LSTM, &worst_model_data_[0],
+                          worst_model_data_.size());
+      result = tester->Run(worst_iteration_, worst_error_rates_, mgr_,
+                           CurrentTrainingStage());
       worst_model_data_.truncate(0);
       best_model_data_ = model_data;
     }
@@ -1327,13 +1357,17 @@ STRING LSTMTrainer::UpdateErrorGraph(int iteration, double error_rate,
   } else if (error_rate > best_error_rate_) {
     // This is a new (local) maximum.
     if (tester != NULL) {
-      if (best_model_data_.empty()) {
+      if (!best_model_data_.empty()) {
+        mgr_.OverwriteEntry(TESSDATA_LSTM, &best_model_data_[0],
+                            best_model_data_.size());
+        result = tester->Run(best_iteration_, best_error_rates_, mgr_,
+                             CurrentTrainingStage());
+      } else if (!worst_model_data_.empty()) {
         // Allow for multiple data points with "worst" error rate.
-        result = tester->Run(worst_iteration_, worst_error_rates_,
-                             worst_model_data_, CurrentTrainingStage());
-      } else {
-        result = tester->Run(best_iteration_, best_error_rates_,
-                             best_model_data_, CurrentTrainingStage());
+        mgr_.OverwriteEntry(TESSDATA_LSTM, &worst_model_data_[0],
+                            worst_model_data_.size());
+        result = tester->Run(worst_iteration_, worst_error_rates_, mgr_,
+                             CurrentTrainingStage());
       }
       if (result.length() > 0)
         best_model_data_.truncate(0);

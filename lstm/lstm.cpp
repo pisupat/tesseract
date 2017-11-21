@@ -132,10 +132,20 @@ int LSTM::InitWeights(float range, TRand* randomizer) {
   for (int w = 0; w < WT_COUNT; ++w) {
     if (w == GFS && !Is2D()) continue;
     num_weights_ += gate_weights_[w].InitWeightsFloat(
-        ns_, na_ + 1, TestFlag(NF_ADA_GRAD), range, randomizer);
+        ns_, na_ + 1, TestFlag(NF_ADAM), range, randomizer);
   }
   if (softmax_ != NULL) {
     num_weights_ += softmax_->InitWeights(range, randomizer);
+  }
+  return num_weights_;
+}
+
+// Recursively searches the network for softmaxes with old_no outputs,
+// and remaps their outputs according to code_map. See network.h for details.
+int LSTM::RemapOutputs(int old_no, const std::vector<int>& code_map) {
+  if (softmax_ != NULL) {
+    num_weights_ -= softmax_->num_weights();
+    num_weights_ += softmax_->RemapOutputs(old_no, code_map);
   }
   return num_weights_;
 }
@@ -250,7 +260,9 @@ void LSTM::Forward(bool debug, const NetworkIO& input,
   if (softmax_ != NULL) {
     softmax_output.Init(no_, scratch);
     ZeroVector<double>(no_, softmax_output);
-    if (input.int_mode()) int_output.Resize2d(true, 1, ns_, scratch);
+    int rounded_softmax_inputs = gate_weights_[CI].RoundInputs(ns_);
+    if (input.int_mode())
+      int_output.Resize2d(true, 1, rounded_softmax_inputs, scratch);
     softmax_->SetupForward(input, NULL);
   }
   NetworkScratch::FloatVec curr_input;
@@ -354,7 +366,7 @@ void LSTM::Forward(bool debug, const NetworkIO& input,
     if (IsTraining()) state_.WriteTimeStep(t, curr_state);
     if (softmax_ != NULL) {
       if (input.int_mode()) {
-        int_output->WriteTimeStep(0, curr_output);
+        int_output->WriteTimeStepPart(0, 0, ns_, curr_output);
         softmax_->ForwardTimeStep(NULL, int_output->i(0), t, softmax_output);
       } else {
         softmax_->ForwardTimeStep(curr_output, NULL, t, softmax_output);
@@ -618,27 +630,22 @@ bool LSTM::Backward(bool debug, const NetworkIO& fwd_deltas,
   if (softmax_ != NULL) {
     softmax_->FinishBackward(*softmax_errors_t);
   }
-  if (needs_to_backprop_) {
-    // Normalize the inputerr in back_deltas.
-    back_deltas->CopyWithNormalization(*back_deltas, fwd_deltas);
-    return true;
-  }
-  return false;
+  return needs_to_backprop_;
 }
 
-// Updates the weights using the given learning rate and momentum.
-// num_samples is the quotient to be used in the adagrad computation iff
-// use_ada_grad_ is true.
-void LSTM::Update(float learning_rate, float momentum, int num_samples) {
+// Updates the weights using the given learning rate, momentum and adam_beta.
+// num_samples is used in the adam computation iff use_adam_ is true.
+void LSTM::Update(float learning_rate, float momentum, float adam_beta,
+                  int num_samples) {
 #if DEBUG_DETAIL > 3
   PrintW();
 #endif
   for (int w = 0; w < WT_COUNT; ++w) {
     if (w == GFS && !Is2D()) continue;
-    gate_weights_[w].Update(learning_rate, momentum, num_samples);
+    gate_weights_[w].Update(learning_rate, momentum, adam_beta, num_samples);
   }
   if (softmax_ != NULL) {
-    softmax_->Update(learning_rate, momentum, num_samples);
+    softmax_->Update(learning_rate, momentum, adam_beta, num_samples);
   }
 #if DEBUG_DETAIL > 3
   PrintDW();
@@ -715,7 +722,8 @@ void LSTM::PrintDW() {
 
 // Resizes forward data to cope with an input image of the given width.
 void LSTM::ResizeForward(const NetworkIO& input) {
-  source_.Resize(input, na_);
+  int rounded_inputs = gate_weights_[CI].RoundInputs(na_);
+  source_.Resize(input, rounded_inputs);
   which_fg_.ResizeNoInit(input.Width(), ns_);
   if (IsTraining()) {
     state_.ResizeFloat(input, ns_);

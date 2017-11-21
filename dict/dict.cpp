@@ -75,7 +75,7 @@ Dict::Dict(CCUtil *ccutil)
                     getCCUtil()->params()),
       double_MEMBER(segment_penalty_dict_frequent_word, 1.0,
                     "Score multiplier for word matches which have good case and"
-                    "are frequent in the given language (lower is better).",
+                    " are frequent in the given language (lower is better).",
                     getCCUtil()->params()),
       double_MEMBER(segment_penalty_dict_case_ok, 1.1,
                     "Score multiplier for word matches that have good case "
@@ -151,7 +151,7 @@ Dict::Dict(CCUtil *ccutil)
                  getCCUtil()->params()),
       BOOL_MEMBER(segment_nonalphabetic_script, false,
                   "Don't use any alphabetic-specific tricks."
-                  "Set to true in the traineddata config file for"
+                  " Set to true in the traineddata config file for"
                   " scripts that are cursive or inherently fixed-pitch",
                   getCCUtil()->params()),
       BOOL_MEMBER(save_doc_words, 0, "Save Document Words",
@@ -161,7 +161,7 @@ Dict::Dict(CCUtil *ccutil)
                     getCCUtil()->params()),
       double_MEMBER(doc_dict_certainty_threshold, -2.25,
                     "Worst certainty for words that can be inserted into the"
-                    "document dictionary",
+                    " document dictionary",
                     getCCUtil()->params()),
       INT_MEMBER(max_permuter_attempts, 10000,
                  "Maximum number of different"
@@ -241,7 +241,8 @@ void Dict::Load(const STRING &lang, TessdataManager *data_file) {
   if (load_bigram_dawg) {
     bigram_dawg_ = dawg_cache_->GetSquishedDawg(lang, TESSDATA_BIGRAM_DAWG,
                                                 dawg_debug_level, data_file);
-    if (bigram_dawg_) dawgs_ += bigram_dawg_;
+    // The bigram_dawg_ is NOT used like the other dawgs! DO NOT add to the
+    // dawgs_!!
   }
   if (load_freq_dawg) {
     freq_dawg_ = dawg_cache_->GetSquishedDawg(lang, TESSDATA_FREQ_DAWG,
@@ -352,6 +353,7 @@ void Dict::End() {
       delete dawgs_[i];
     }
   }
+  dawg_cache_->FreeDawg(bigram_dawg_);
   if (dawg_cache_is_ours_) {
     delete dawg_cache_;
     dawg_cache_ = NULL;
@@ -370,7 +372,7 @@ void Dict::End() {
 int Dict::def_letter_is_okay(void* void_dawg_args,
                              UNICHAR_ID unichar_id,
                              bool word_end) const {
-  DawgArgs *dawg_args = static_cast<DawgArgs*>(void_dawg_args);
+  DawgArgs *dawg_args = static_cast<DawgArgs *>(void_dawg_args);
 
   if (dawg_debug_level >= 3) {
     tprintf("def_letter_is_okay: current unichar=%s word_end=%d"

@@ -1,7 +1,7 @@
 /* -*-C-*-
  ********************************************************************************
  *
- * File:        blobs.c  (Formerly blobs.c)
+ * File:         blobs.cpp  (Formerly blobs.c)
  * Description:  Blob definition
  * Author:       Mark Seaman, OCR Technology
  * Created:      Fri Oct 27 15:39:52 1989
@@ -62,7 +62,7 @@ const TPOINT kDivisibleVerticalItalic(1, 5);
               F u n c t i o n s
 ----------------------------------------------------------------------*/
 
-CLISTIZE(EDGEPT);
+CLISTIZE(EDGEPT)
 
 // Returns true when the two line segments cross each other.
 // (Moved from outlines.cpp).

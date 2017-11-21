@@ -1,6 +1,7 @@
 AUTOMAKE_OPTIONS = subdir-objects
 SUBDIRS =
 AM_CXXFLAGS =
+AM_CPPFLAGS = -DUSE_STD_NAMESPACE
 
 if !NO_TESSDATA_PREFIX
 AM_CXXFLAGS += -DTESSDATA_PREFIX=@datadir@/
@@ -14,7 +15,8 @@ endif
 include_HEADERS = \
 	basedir.h errcode.h fileerr.h genericvector.h helpers.h host.h memry.h \
 	ndminx.h params.h ocrclass.h platform.h serialis.h strngs.h \
-	tesscallback.h unichar.h unicharcompress.h unicharmap.h unicharset.h
+	tesscallback.h unichar.h unicharcompress.h unicharmap.h unicharset.h \
+    version.h
 
 noinst_HEADERS = \
     ambigs.h bits16.h bitvector.h ccutil.h clst.h doubleptr.h elst2.h \
@@ -23,12 +25,7 @@ noinst_HEADERS = \
     scanutils.h tessdatamanager.h tprintf.h unicity_table.h unicodes.h \
     universalambigs.h
 
-if !USING_MULTIPLELIBS
 noinst_LTLIBRARIES = libtesseract_ccutil.la
-else
-lib_LTLIBRARIES = libtesseract_ccutil.la
-libtesseract_ccutil_la_LDFLAGS = -version-info $(GENERIC_LIBRARY_VERSION)
-endif
 
 libtesseract_ccutil_la_SOURCES = \
     ambigs.cpp basedir.cpp bits16.cpp bitvector.cpp \

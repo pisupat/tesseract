@@ -81,10 +81,12 @@ class GENERIC_2D_ARRAY {
     memcpy(array_, src.array_, num_elements() * sizeof(array_[0]));
   }
 
-  // Reallocate the array to the given size. Does not keep old data, but does
+  // Reallocates the array to the given size. Does not keep old data, but does
   // not initialize the array either.
-  void ResizeNoInit(int size1, int size2) {
-    int new_size = size1 * size2;
+  // The allocated memory is expanded on the end by pad, allowing deliberate
+  // access beyond the bounds of the array.
+  void ResizeNoInit(int size1, int size2, int pad = 0) {
+    int new_size = size1 * size2 + pad;
     if (new_size > size_allocated_) {
       delete [] array_;
       array_ = new T[new_size];
@@ -92,6 +94,8 @@ class GENERIC_2D_ARRAY {
     }
     dim1_ = size1;
     dim2_ = size2;
+    // Fill the padding data so it isn't uninitialized.
+    for (int i = size1 * size2; i < new_size; ++i) array_[i] = empty_;
   }
 
   // Reallocate the array to the given size. Does not keep old data.
@@ -360,19 +364,22 @@ class GENERIC_2D_ARRAY {
   }
 
   // Accumulates the element-wise sums of squares of src into *this.
-  void SumSquares(const GENERIC_2D_ARRAY<T>& src) {
+  void SumSquares(const GENERIC_2D_ARRAY<T>& src, T decay_factor) {
+    T update_factor = 1.0 - decay_factor;
     int size = num_elements();
     for (int i = 0; i < size; ++i) {
-      array_[i] += src.array_[i] * src.array_[i];
+      array_[i] = array_[i] * decay_factor +
+                  update_factor * src.array_[i] * src.array_[i];
     }
   }
 
-  // Scales each element using the ada-grad algorithm, ie array_[i] by
-  // sqrt(num_samples/max(1,sqsum[i])).
-  void AdaGradScaling(const GENERIC_2D_ARRAY<T>& sqsum, int num_samples) {
+  // Scales each element using the adam algorithm, ie array_[i] by
+  // sqrt(sqsum[i] + epsilon)).
+  void AdamUpdate(const GENERIC_2D_ARRAY<T>& sum,
+                  const GENERIC_2D_ARRAY<T>& sqsum, T epsilon) {
     int size = num_elements();
     for (int i = 0; i < size; ++i) {
-      array_[i] *= sqrt(num_samples / MAX(1.0, sqsum.array_[i]));
+      array_[i] += sum.array_[i] / (sqrt(sqsum.array_[i]) + epsilon);
     }
   }
 

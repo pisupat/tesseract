@@ -64,9 +64,8 @@ class StringRenderer {
                             int text_length, string* font_used, Pix** pix);
 
   bool set_font(const string& desc);
-  void set_char_spacing(double char_spacing) {
-    char_spacing_ = char_spacing;
-  }
+  // Char spacing is in PIXELS!!!!.
+  void set_char_spacing(int char_spacing) { char_spacing_ = char_spacing; }
   void set_leading(int leading) {
     leading_ = leading;
   }
@@ -180,7 +179,7 @@ class StringRenderer {
   int page_width_, page_height_, h_margin_, v_margin_;
   // Text rendering properties
   double pen_color_[3];
-  double char_spacing_;
+  int char_spacing_;
   int leading_, resolution_;
   bool vertical_text_;
   bool gravity_hint_strong_;
@@ -212,7 +211,7 @@ class StringRenderer {
   // Objects cached for subsequent calls to RenderAllFontsToImage()
   std::unordered_map<char32, inT64> char_map_;  // Time-saving char histogram.
   int total_chars_;   // Number in the string to be rendered.
-  int font_index_;    // Index of next font to use in font list.
+  unsigned int font_index_;  // Index of next font to use in font list.
   int last_offset_;   // Offset returned from last successful rendering
 
  private:

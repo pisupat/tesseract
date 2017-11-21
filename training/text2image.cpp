@@ -50,12 +50,6 @@
 #include "unicharset.h"
 #include "util.h"
 
-#ifdef USE_STD_NAMESPACE
-using std::make_pair;
-using std::map;
-using std::pair;
-#endif
-
 // A number with which to initialize the random number generator.
 const int kRandomSeed = 0x18273645;
 
@@ -84,6 +78,9 @@ INT_PARAM_FLAG(xsize, 3600, "Width of output image");
 
 // Max height of output image (in pixels).
 INT_PARAM_FLAG(ysize, 4800, "Height of output image");
+
+// Max number of pages to produce.
+INT_PARAM_FLAG(max_pages, 0, "Maximum number of pages to output (0=unlimited)");
 
 // Margin around text (in pixels).
 INT_PARAM_FLAG(margin, 100, "Margin round edges of image");
@@ -415,9 +412,7 @@ using tesseract::SpanUTF8NotWhitespace;
 using tesseract::SpanUTF8Whitespace;
 using tesseract::StringRenderer;
 
-int main(int argc, char** argv) {
-  tesseract::ParseCommandLineFlags(argv[0], &argc, &argv, true);
-
+int Main() {
   if (FLAGS_list_available_fonts) {
     const std::vector<string>& all_fonts = FontUtils::ListAvailableFonts();
     for (unsigned int i = 0; i < all_fonts.size(); ++i) {
@@ -549,8 +544,9 @@ int main(int argc, char** argv) {
       const char *curr_pos = str8 + offsets[i].first;
       int ngram_len = offsets[i].second;
       // Skip words that contain characters not in found in unicharset.
+      string cleaned = UNICHARSET::CleanupString(curr_pos, ngram_len);
       if (!FLAGS_unicharset_file.empty() &&
-          !unicharset.encodable_string(curr_pos, nullptr)) {
+          !unicharset.encodable_string(cleaned.c_str(), nullptr)) {
         continue;
       }
       rand_utf8.append(curr_pos, ngram_len);
@@ -586,7 +582,10 @@ int main(int argc, char** argv) {
   for (int pass = 0; pass < num_pass; ++pass) {
     int page_num = 0;
     string font_used;
-    for (size_t offset = 0; offset < strlen(to_render_utf8); ++im, ++page_num) {
+    for (size_t offset = 0;
+         offset < strlen(to_render_utf8) &&
+         (FLAGS_max_pages == 0 || page_num < FLAGS_max_pages);
+         ++im, ++page_num) {
       tlog(1, "Starting page %d\n", im);
       Pix* pix = nullptr;
       if (FLAGS_find_fonts) {
@@ -670,4 +669,9 @@ int main(int argc, char** argv) {
   }
 
   return 0;
+}
+
+int main(int argc, char** argv) {
+  tesseract::ParseCommandLineFlags(argv[0], &argc, &argv, true);
+  Main();
 }

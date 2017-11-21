@@ -22,9 +22,7 @@
 
 #include <string>
 
-#ifdef USE_STD_NAMESPACE
-using std::string;
-#endif
+#include "platform.h"
 
 class STATS;
 class UNICHARSET;
@@ -40,6 +38,10 @@ void SetupBasicProperties(bool report_errors, bool decompose,
 inline void SetupBasicProperties(bool report_errors, UNICHARSET* unicharset) {
   SetupBasicProperties(report_errors, false, unicharset);
 }
+// Helper sets the properties from universal script unicharsets, if found.
+void SetScriptProperties(const string& script_dir, UNICHARSET* unicharset);
+// Helper gets the combined x-heights string.
+string GetXheightString(const string& script_dir, const UNICHARSET& unicharset);
 
 // Helper to set the properties for an input unicharset file, writes to the
 // output file. If an appropriate script unicharset can be found in the

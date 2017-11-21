@@ -180,6 +180,10 @@ projects:
         files: training/classifier_tester.cpp
         dependencies: common_training
 
+    combine_lang_model:
+        files: training/combine_lang_model.cpp
+        dependencies: unicharset_training
+
     combine_tessdata:
         files: training/combine_tessdata.cpp
         dependencies: libtesseract
@@ -204,7 +208,7 @@ projects:
 
     unicharset_extractor:
         files: training/unicharset_extractor.cpp
-        dependencies: tessopt
+        dependencies: unicharset_training
 
     wordlist2dawg:
         files: training/wordlist2dawg.cpp
@@ -216,9 +220,11 @@ projects:
         files:
             - training/fileio.*
             - training/icuerrorcode.h
+            - training/lang_model_helpers.*
             - training/lstmtester.*
             - training/normstrngs.*
             - training/unicharset_training_utils.*
+            - training/validat.*
         include_directories: training
         dependencies:
             - common_training

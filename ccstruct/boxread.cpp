@@ -57,12 +57,14 @@ bool ReadAllBoxes(int target_page, bool skip_blanks, const STRING& filename,
     return false;
   // Convert the array of bytes to a string, so it can be used by the parser.
   box_data.push_back('\0');
-  return ReadMemBoxes(target_page, skip_blanks, &box_data[0], boxes, texts,
-                      box_texts, pages);
+  return ReadMemBoxes(target_page, skip_blanks, &box_data[0],
+                      /*continue_on_failure*/ true, boxes, texts, box_texts,
+                      pages);
 }
 
 // Reads all boxes from the string. Otherwise, as ReadAllBoxes.
 bool ReadMemBoxes(int target_page, bool skip_blanks, const char* box_data,
+                  bool continue_on_failure,
                   GenericVector<TBOX>* boxes,
                   GenericVector<STRING>* texts,
                   GenericVector<STRING>* box_texts,
@@ -77,7 +79,10 @@ bool ReadMemBoxes(int target_page, bool skip_blanks, const char* box_data,
     STRING utf8_str;
     TBOX box;
     if (!ParseBoxFileStr(lines[i].string(), &page, &utf8_str, &box)) {
-      continue;
+      if (continue_on_failure)
+        continue;
+      else
+        return false;
     }
     if (skip_blanks && (utf8_str == " " || utf8_str == "\t")) continue;
     if (target_page >= 0 && page != target_page) continue;
@@ -206,7 +211,7 @@ bool ParseBoxFileStr(const char* boxfile_str, int* page_number,
   // Validate UTF8 by making unichars with it.
   int used = 0;
   while (used < uch_len) {
-    UNICHAR ch(uch + used, uch_len - used);
+    tesseract::UNICHAR ch(uch + used, uch_len - used);
     int new_used = ch.utf8_len();
     if (new_used == 0) {
       tprintf("Bad UTF-8 str %s starts with 0x%02x at col %d\n",

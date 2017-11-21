@@ -50,7 +50,7 @@ bool LSTMTester::LoadAllEvalData(const GenericVector<STRING>& filenames) {
 // Runs an evaluation asynchronously on the stored data and returns a string
 // describing the results of the previous test.
 STRING LSTMTester::RunEvalAsync(int iteration, const double* training_errors,
-                                const GenericVector<char>& model_data,
+                                const TessdataManager& model_mgr,
                                 int training_stage) {
   STRING result;
   if (total_pages_ == 0) {
@@ -68,7 +68,7 @@ STRING LSTMTester::RunEvalAsync(int iteration, const double* training_errors,
   if (training_errors != nullptr) {
     test_iteration_ = iteration;
     test_training_errors_ = training_errors;
-    test_model_data_ = model_data;
+    test_model_mgr_ = model_mgr;
     test_training_stage_ = training_stage;
     SVSync::StartThread(&LSTMTester::ThreadFunc, this);
   } else {
@@ -80,10 +80,13 @@ STRING LSTMTester::RunEvalAsync(int iteration, const double* training_errors,
 // Runs an evaluation synchronously on the stored data and returns a string
 // describing the results.
 STRING LSTMTester::RunEvalSync(int iteration, const double* training_errors,
-                               const GenericVector<char>& model_data,
-                               int training_stage) {
+                               const TessdataManager& model_mgr,
+                               int training_stage, int verbosity) {
   LSTMTrainer trainer;
-  if (!trainer.ReadTrainingDump(model_data, &trainer)) {
+  trainer.InitCharSet(model_mgr);
+  TFile fp;
+  if (!model_mgr.GetComponent(TESSDATA_LSTM, &fp) ||
+      !trainer.DeSerialize(&model_mgr, &fp)) {
     return "Deserialize failed";
   }
   int eval_iteration = 0;
@@ -94,11 +97,20 @@ STRING LSTMTester::RunEvalSync(int iteration, const double* training_errors,
     const ImageData* trainingdata = test_data_.GetPageBySerial(eval_iteration);
     trainer.SetIteration(++eval_iteration);
     NetworkIO fwd_outputs, targets;
-    if (trainer.PrepareForBackward(trainingdata, &fwd_outputs, &targets) !=
-        UNENCODABLE) {
+    Trainability result =
+        trainer.PrepareForBackward(trainingdata, &fwd_outputs, &targets);
+    if (result != UNENCODABLE) {
       char_error += trainer.NewSingleError(tesseract::ET_CHAR_ERROR);
       word_error += trainer.NewSingleError(tesseract::ET_WORD_RECERR);
       ++error_count;
+      if (verbosity > 1 || (verbosity > 0 && result != PERFECT)) {
+        tprintf("Truth:%s\n", trainingdata->transcription().string());
+        GenericVector<int> ocr_labels;
+        GenericVector<int> xcoords;
+        trainer.LabelsFromOutputs(fwd_outputs, &ocr_labels, &xcoords);
+        STRING ocr_text = trainer.DecodeLabels(ocr_labels);
+        tprintf("OCR  :%s\n", ocr_text.string());
+      }
     }
   }
   char_error *= 100.0 / total_pages_;
@@ -122,7 +134,8 @@ void* LSTMTester::ThreadFunc(void* lstmtester_void) {
   LSTMTester* lstmtester = static_cast<LSTMTester*>(lstmtester_void);
   lstmtester->test_result_ = lstmtester->RunEvalSync(
       lstmtester->test_iteration_, lstmtester->test_training_errors_,
-      lstmtester->test_model_data_, lstmtester->test_training_stage_);
+      lstmtester->test_model_mgr_, lstmtester->test_training_stage_,
+      /*verbosity*/ 0);
   lstmtester->UnlockRunning();
   return lstmtester_void;
 }

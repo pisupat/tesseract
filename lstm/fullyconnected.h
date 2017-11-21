@@ -68,6 +68,9 @@ class FullyConnected : public Network {
   // Sets up the network for training. Initializes weights using weights of
   // scale `range` picked according to the random number generator `randomizer`.
   virtual int InitWeights(float range, TRand* randomizer);
+  // Recursively searches the network for softmaxes with old_no outputs,
+  // and remaps their outputs according to code_map. See network.h for details.
+  int RemapOutputs(int old_no, const std::vector<int>& code_map) override;
 
   // Converts a float network to an int network.
   virtual void ConvertToInt();
@@ -101,10 +104,10 @@ class FullyConnected : public Network {
                         TransposedArray* errors_t, double* backprop);
   void FinishBackward(const TransposedArray& errors_t);
 
-  // Updates the weights using the given learning rate and momentum.
-  // num_samples is the quotient to be used in the adagrad computation iff
-  // use_ada_grad_ is true.
-  virtual void Update(float learning_rate, float momentum, int num_samples);
+  // Updates the weights using the given learning rate, momentum and adam_beta.
+  // num_samples is used in the adam computation iff use_adam_ is true.
+  void Update(float learning_rate, float momentum, float adam_beta,
+              int num_samples) override;
   // Sums the products of weight updates in *this and other, splitting into
   // positive (same direction) in *same and negative (different direction) in
   // *changed.

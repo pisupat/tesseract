@@ -46,6 +46,9 @@ class Series : public Plumbing {
   // scale `range` picked according to the random number generator `randomizer`.
   // Returns the number of weights initialized.
   virtual int InitWeights(float range, TRand* randomizer);
+  // Recursively searches the network for softmaxes with old_no outputs,
+  // and remaps their outputs according to code_map. See network.h for details.
+  int RemapOutputs(int old_no, const std::vector<int>& code_map) override;
 
   // Sets needs_to_backprop_ to needs_backprop and returns true if
   // needs_backprop || any weights in this network so the next layer forward

@@ -1,8 +1,8 @@
 /**********************************************************************
- * File:        boxread.cpp
+ * File:        boxread.h
  * Description: Read data from a box file.
- * Author:		Ray Smith
- * Created:		Fri Aug 24 17:47:23 PDT 2007
+ * Author:	Ray Smith
+ * Created:	Fri Aug 24 17:47:23 PDT 2007
  *
  * (C) Copyright 2007, Google Inc.
  ** Licensed under the Apache License, Version 2.0 (the "License");
@@ -48,7 +48,11 @@ bool ReadAllBoxes(int target_page, bool skip_blanks, const STRING& filename,
                   GenericVector<int>* pages);
 
 // Reads all boxes from the string. Otherwise, as ReadAllBoxes.
+// continue_on_failure allows reading to continue even if an invalid box is
+// encountered and will return true if it succeeds in reading some boxes.
+// It otherwise gives up and returns false on encountering an invalid box.
 bool ReadMemBoxes(int target_page, bool skip_blanks, const char* box_data,
+                  bool continue_on_failure,
                   GenericVector<TBOX>* boxes,
                   GenericVector<STRING>* texts,
                   GenericVector<STRING>* box_texts,
